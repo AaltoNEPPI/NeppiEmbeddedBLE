@@ -25,6 +25,8 @@ RIOTBASE ?= $(CURDIR)/../../../RIOT
 # Uncomment this to enable scheduler statistics for ps:
 #CFLAGS += -DSCHEDSTATISTICS
 
+CFLAGS += -DNRF_SDH_BLE_VS_UUID_COUNT=1
+
 # If you want to use native with valgrind, you should recompile native
 # with the target all-valgrind instead of all:
 # make -B clean all-valgrind
