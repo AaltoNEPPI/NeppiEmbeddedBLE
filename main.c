@@ -17,201 +17,247 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "ble_advdata.h"
-// #include "ble_conn_params.h"
-#include "ble_hci.h"
-#include "nordic_common.h"
-#include "softdevice_handler.h"
+#include "ble_conn_params.h"
 #include "board.h"
 #include "thread.h"
 #include "msg.h"
-#include "ble.h"
-#include "ble_srv_common.h"
+#include "nrf_ble_gatt.h"
+#include "nrf_sdh_ble.h"
 #include "app_error.h"
-#include "ble-core.h"
 #include "net/gnrc/netif.h"
-// #include "periph_conf.h"
-// #include "bsp.h"
-// #include "app_timer.h"
+
+#include "ble-core.h"
 
 #include "xtimer.h"
 #include "board.h"
 
 #include "periph/gpio.h"
+#define ENABLE_DEBUG (1)
 #include "debug.h"
 
-//#define EERO
-#define BLE_PRIO (GNRC_NETIF_PRIO)
+#define LED_CONNECTED_ON  LED1_ON
+#define LED_CONNECTED_OFF LED1_OFF
 
-#define RCV_QUEUE_SIZE  (8)
-//#define SLEEP (5 * MS_PER_SEC)
-#define SLEEP (500 * 1000u)
+/**
+ * RIOT thread priority for the BLE handler.
+ * We use the same thread priority as for TCP/IP network interfaces.
+ */
+#define BLE_THREAD_PRIO (GNRC_NETIF_PRIO)
 
-#define BUT1		13
-//#define BUT2		17
-//#define BUT3		15
-//#define BUT4		19
+/**
+ * Advertised device name
+ */
+#ifndef DEVICE_NAME
+#define DEVICE_NAME "NeppiT"
+#endif // DEVICE_NAME
 
+/**
+ * Application's BLE observer priority. You shouldn't need to modify this value.
+ * Used in NRF_SDH_BLE_OBSERVER.
+ * By default there are a maximum of four levels, 0-3.
+ * By default, the application priority should be lowest (highest number).
+ */
+#define APP_BLE_OBSERVER_PRIO 3 /* (NRF_SDH_BLE_OBSERVER_PRIO_LEVELS-1) */
 
-#define DEVICE_NAME						"neppi"
-#define IS_SRVC_CHANGED_CHARACT_PRESENT 1                                 /**< Include or not the service_changed characteristic. if not enabled, the server's database cannot be changed for the lifetime of the device*/
-#define APP_CFG_NON_CONN_ADV_TIMEOUT    0                                 /**< Time for which the device must be advertising in non-connectable mode (in seconds). 0 disables timeout. */
-#define APP_ADV_ADV_INTERVAL			MSEC_TO_UNITS(50, UNIT_0_625_MS)
-#define UPDATE_ACC						1
-#define UPDATE_ENERGY						2
-//#define ACC_DATA_READY					1
-//#define APP_BEACON_INFO_LENGTH          0x17                              /**< Total length of information advertised by the Beacon. */
-//#define APP_ADV_DATA_LENGTH             0x15                              /**< Length of manufacturer specific data in the advertisement. */
-//#define APP_DEVICE_TYPE                 0x02                              /**< 0x02 refers to Beacon. */
-//#define APP_MEASURED_RSSI               0xC3                              /**< The Beacon's measured RSSI at 1 meter distance in dBm. */
-//#define APP_COMPANY_IDENTIFIER          0x0059                            /**< Company identifier for Nordic Semiconductor ASA. as per www.bluetooth.org. */
-//#define APP_MAJOR_VALUE                 0x01, 0x02                        /**< Major value used to identify Beacons. */
-//#define APP_MINOR_VALUE                 0x03, 0x04                        /**< Minor value used to identify Beacons. */
-/*
-#define APP_BEACON_UUID                 0x01, 0x12, 0x23, 0x34, \
-                                        0x45, 0x56, 0x67, 0x78, \
-                                        0x89, 0x9a, 0xab, 0xbc, \
-                                        0xcd, 0xde, 0xef, 0xf0
-*/
+/**
+ * A tag for the SoftDevice BLE configuration.
+ *
+ * This is basically any small integer.  By convention,
+ * one is used for generic applications.
+ */
+#define APP_BLE_CONN_CFG_TAG 1
 
-// Value used as error code on stack dump, can be used to identify stack
-// location on stack unwind.
-#define DEAD_BEEF                                        0xDEADBEEF
+/**************
+ * BLE Advertisement parameters
+ **************/
+
+/**
+ * The advertising interval (in units of 0.625 ms).
+ * This value can vary between 100ms to 10.24s).
+ */
+#define APP_ADV_INTERVAL MSEC_TO_UNITS(50, UNIT_0_625_MS)
+
+/**************
+ * BLE GAP parameters
+ **************/
+
+/**
+ * Minimum acceptable connection interval (0.5 seconds).
+ */
+#define MIN_CONN_INTERVAL MSEC_TO_UNITS(100, UNIT_1_25_MS)
+
+/**
+ * Maximum acceptable connection interval (1 second).
+ */
+#define MAX_CONN_INTERVAL MSEC_TO_UNITS(200, UNIT_1_25_MS)
+
+/**
+ * Slave latency.
+ */
+#define SLAVE_LATENCY 0
+
+/**
+ * Connection supervisory time-out (4 seconds).
+ */
+#define CONN_SUP_TIMEOUT MSEC_TO_UNITS(4000, UNIT_10_MS)
+
+/*************
+ * Messages from the BLE thread to the main thread
+ *************/
+
+#define UPDATE_ACC    1
+#define UPDATE_ENERGY 2
+
+/*************
+ * UUIDs used for the service and characteristics
+ *************/
+
 // 128-bit base UUID
-#define BLE_UUID_OUR_BASE_UUID                           {{ \
-                                                            0x8D, 0x19, 0x7F, \
-                                                            0x81, 0x08, 0x08, \
-                                                            0x12, 0xE0, 0x2B, \
-                                                            0x14, 0x95, 0x71, \
-                                                            0x05, 0x06, 0x31, \
-                                                            0xB1 \
-                                                         }}
-// Just a random, but recognizable value
+#define BLE_UUID_OUR_BASE_UUID \
+{{ 0x8D, 0x19, 0x7F, 0x81, \
+   0x08, 0x08, 0x12, 0xE0, \
+   0x2B, 0x14, 0x95, 0x71, \
+   0x05, 0x06, 0x31, 0xB1, \
+}}
+
+// Just a random, but recognizable values, for the service and characteristics
 #define BLE_UUID_OUR_SERVICE                             0xABDC
-//#define BLE_UUID_OUR_CHARACTERISTC_UUID                  0xBBC9
-//#define BLE_UUID_ACCELEROMETER_RAW_CHARACTERISTIC        0xBBCA
-//#define BLE_UUID_ACCELEROMETER_MOVEMENT_CHARACTERISTIC   0xBBCB
-//#define BLE_UUID_HUMIDITY_CHARACTERISTIC                 0xBBCC
-//#define BLE_UUID_RGB_SENSOR_CHARACTERISTIC               0xBBCD
-//#define BLE_UUID_BUTTONS_CHARACTERISTIC                  0xBBCE
 #define BLE_UUID_ENERGY_CHARACTERISTIC                 	 0xBBCF
 #define BLE_UUID_CONTROLS_CHARACTERISTIC                 0xBBD0
 
-static kernel_pid_t main_pid;
-static kernel_pid_t ble_thread_pid;
-
-static msg_t rcv_queue[RCV_QUEUE_SIZE];
-//static msg_t rcv_queue_main[RCV_QUEUE_SIZE];
-
-// Parameters to be passed to the stack when starting advertising.
-// static ble_gap_adv_params_t m_adv_params;
-static void ble_evt_dispatch(ble_evt_t * p_ble_evt);
-// static uint16_t m_conn_handle = BLE_CONN_HANDLE_INVALID;
-
-/*
-static uint8_t m_beacon_info[APP_BEACON_INFO_LENGTH] =
-{
-    APP_DEVICE_TYPE,     // Manufacturer specific information. Specifies the device type in this
-                         // implementation.
-    APP_ADV_DATA_LENGTH, // Manufacturer specific information. Specifies the length of the
-                         // manufacturer specific data in this implementation.
-    APP_BEACON_UUID,     // 128 bit UUID value.
-    APP_MAJOR_VALUE,     // Major arbitrary value that can be used to distinguish between Beacons.
-    APP_MINOR_VALUE,     // Minor arbitrary value that can be used to distinguish between Beacons.
-    APP_MEASURED_RSSI    // Manufacturer specific information. The Beacon's measured TX power in
-                         // this implementation.
-};
-*/
-/**@brief Callback function for asserts in the SoftDevice.
- *
- * @details This function will be called in case of an assert in the SoftDevice.
- *
- * @warning This handler is an example only and does not fit a final product. You need to analyze
- *          how your product is supposed to react in case of Assert.
- * @warning On assert from the SoftDevice, the system can only recover on reset.
- *
- * @param[in]   line_num   Line number of the failing ASSERT call.
- * @param[in]   file_name  File name of the failing ASSERT call.
- */
-
-typedef struct
-{
-	uint16_t                    conn_handle;    /**< Handle of the current connection (as provided by the BLE stack, is BLE_CONN_HANDLE_INVALID if not in a connection).*/
-	uint16_t                    service_handle; /**< Handle of Our Service (as provided by the BLE stack). */
-	ble_gatts_char_handles_t	char_handles[2];	/**< Handle of characteristic (as provided by the BLE stack). */
+typedef struct {
+    /**
+     * Handle of the current connection (as provided by the BLE stack,
+     * is BLE_CONN_HANDLE_INVALID if not in a connection).
+     */
+    uint16_t conn_handle;
+    /**
+     * Handle of Our Service (as provided by the BLE stack).
+     */
+    uint16_t service_handle;
+    /**
+     * Handle of characteristic (as provided by the BLE stack).
+     */
+    ble_gatts_char_handles_t char_handles[2];
 } ble_os_t;
 
 static ble_os_t our_service;
 
+/**************
+ * RIOT thread IDs
+ **************/
+
+static kernel_pid_t main_pid;
+static kernel_pid_t ble_thread_pid;
+
+static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context);
+static void add_characteristic(ble_os_t* p_our_service, uint16_t  characteristic, uint8_t char_index);
+
+/**
+ * Function called by the NRF_ASSERT macro when an assertion
+ * fails somewhere in the NRF SDK.
+ *
+ * For now, we just print an error message and enter a busy
+ * loop, waiting for a developer with a debugger.
+ *
+ * Note that this is NOT good for a production version.
+ */
 void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
 {
-    app_error_handler(DEAD_BEEF, line_num, p_file_name);
+    core_panic(PANIC_ASSERT_FAIL, "RIOT: NRF Assertion failed.\n");
 }
 
-
-void add_characteristic(ble_os_t* p_our_service, uint16_t  characteristic, uint8_t char_index);
-
-
-/**@brief Function for initializing the BLE stack.
- *
- * @details Initializes the SoftDevice and the BLE event interrupt.
+/**
+ * A local RIOT-nice error handler replacing NRF's APP_ERROR_CHECK
  */
-static void stack_init(void)
+#define NRF_APP_ERROR_CHECK(err_code)                                           \
+do {                                                                            \
+  if (NRF_SUCCESS != err_code) {                                                \
+    DEBUG("NRF call failed: err=%lu, %s#%d\n", err_code, __FILE__, __LINE__);   \
+    return;                                                                     \
+  }                                                                             \
+} while(0)
+
+static ble_uuid_t adv_uuids[] = {{BLE_UUID_OUR_SERVICE, 0 /* Filled dynamically */}};
+
+static const ble_context_t ble_context = {
+    .conn_cfg_tag = APP_BLE_CONN_CFG_TAG,
+    .name = DEVICE_NAME,
+    .adv_uuids = adv_uuids,
+    .adv_uuid_cnt = sizeof(adv_uuids) / sizeof(adv_uuids[0]),
+    .app_adv_interval = APP_ADV_INTERVAL,
+};
+
+// Register a handler for BLE events.
+NRF_SDH_BLE_OBSERVER(m_ble_observer, APP_BLE_OBSERVER_PRIO, ble_evt_handler, NULL);
+
+static void services_init(const ble_context_t* p_ble_context)
 {
-    uint32_t err_code;
+    ble_uuid_t *p_service_uuid = p_ble_context->adv_uuids;
+    ble_os_t*   p_our_service = &our_service;
 
-    // Enable BLE stack
-    ble_enable_params_t ble_enable_params;
-    memset(&ble_enable_params, 0, sizeof(ble_enable_params));
-	ble_enable_params.gatts_enable_params.attr_tab_size =
-        BLE_GATTS_ATTR_TAB_SIZE_DEFAULT;
-    ble_enable_params.gatts_enable_params.service_changed =
-        IS_SRVC_CHANGED_CHARACT_PRESENT;
-    err_code = sd_ble_enable(&ble_enable_params);
-    APP_ERROR_CHECK(err_code);
+    uint32_t      err_code;
+    ble_uuid128_t base_uuid = BLE_UUID_OUR_BASE_UUID;
 
+    /* service_uuid_p->uuid already filled in */
+    err_code = sd_ble_uuid_vs_add(&base_uuid, &p_service_uuid->type);
+    NRF_APP_ERROR_CHECK(err_code);
 
-	err_code = softdevice_ble_evt_handler_set(ble_evt_dispatch);
-	APP_ERROR_CHECK(err_code);
+    err_code = sd_ble_gatts_service_add(BLE_GATTS_SRVC_TYPE_PRIMARY,
+					p_service_uuid,
+					&p_our_service->service_handle);
+    NRF_APP_ERROR_CHECK(err_code);
 
+    p_our_service->conn_handle = BLE_CONN_HANDLE_INVALID;
 
-	ble_gap_addr_t ble_addr;
-	err_code = sd_ble_gap_address_get(&ble_addr);
-	APP_ERROR_CHECK(err_code);
+    add_characteristic(p_our_service, BLE_UUID_CONTROLS_CHARACTERISTIC, 0);
+    add_characteristic(p_our_service, BLE_UUID_ENERGY_CHARACTERISTIC, 1);
+}
 
-	ble_addr.addr[5] = 0x00;
-	ble_addr.addr_type = BLE_GAP_ADDR_TYPE_PUBLIC;
+/**
+ * Function for the GAP initialization.
+ *
+ * This function sets up all the necessary GAP (Generic Access
+ * Profile) parameters of the including the device name, appearance,
+ * and the preferred connection parameters.
+ */
+static void gap_params_init(const ble_context_t* p_ble_context)
+{
+    ret_code_t              err_code;
+    ble_gap_conn_params_t   gap_conn_params;
+    ble_gap_conn_sec_mode_t sec_mode;
 
-	err_code = sd_ble_gap_address_set(BLE_GAP_ADDR_CYCLE_MODE_NONE, &ble_addr);
-	APP_ERROR_CHECK(err_code);
+    BLE_GAP_CONN_SEC_MODE_SET_OPEN(&sec_mode);
+
+    err_code = sd_ble_gap_device_name_set(&sec_mode,
+					  (uint8_t*)p_ble_context->name,
+                                          strlen(p_ble_context->name));
+    NRF_APP_ERROR_CHECK(err_code);
+
+    memset(&gap_conn_params, 0, sizeof(gap_conn_params));
+
+    gap_conn_params.min_conn_interval = MIN_CONN_INTERVAL;
+    gap_conn_params.max_conn_interval = MAX_CONN_INTERVAL;
+    gap_conn_params.slave_latency     = SLAVE_LATENCY;
+    gap_conn_params.conn_sup_timeout  = CONN_SUP_TIMEOUT;
+
+    err_code = sd_ble_gap_ppcp_set(&gap_conn_params);
+    NRF_APP_ERROR_CHECK(err_code);
 }
 
 
-static void services_init(void)
+/**
+ * Function for initializing the GATT module.
+ */
+static void gatt_init(void)
 {
-	ble_os_t* p_our_service = &our_service;
+    NRF_BLE_GATT_DEF(m_gatt);
 
-	uint32_t      err_code;
-	ble_uuid_t    service_uuid;
-	ble_uuid128_t base_uuid = BLE_UUID_OUR_BASE_UUID;
-
-	service_uuid.uuid = BLE_UUID_OUR_SERVICE;
-	err_code = sd_ble_uuid_vs_add(&base_uuid, &service_uuid.type);
-	APP_ERROR_CHECK(err_code);
-
-	err_code = sd_ble_gatts_service_add(BLE_GATTS_SRVC_TYPE_PRIMARY,
-		&service_uuid,
-		&p_our_service->service_handle);
-	APP_ERROR_CHECK(err_code);
-
-	p_our_service->conn_handle = BLE_CONN_HANDLE_INVALID;
-	
-	add_characteristic(p_our_service, BLE_UUID_CONTROLS_CHARACTERISTIC, 0);
-        add_characteristic(p_our_service, BLE_UUID_ENERGY_CHARACTERISTIC, 1);
-        
+    ret_code_t err_code = nrf_ble_gatt_init(&m_gatt, NULL);
+    NRF_APP_ERROR_CHECK(err_code);
 }
 
-
-void add_characteristic(ble_os_t* p_our_service, uint16_t  characteristic, uint8_t char_index)
+static void add_characteristic(ble_os_t* p_our_service, uint16_t  characteristic, uint8_t char_index)
 {
     ble_uuid128_t base_uuid = BLE_UUID_OUR_BASE_UUID;
     uint32_t      err_code = 0;
@@ -219,7 +265,7 @@ void add_characteristic(ble_os_t* p_our_service, uint16_t  characteristic, uint8
 
     char_uuid.uuid = characteristic;
     sd_ble_uuid_vs_add(&base_uuid, &char_uuid.type);
-    APP_ERROR_CHECK(err_code);
+    NRF_APP_ERROR_CHECK(err_code);
 
     // Add read/write properties to our characteristic
     ble_gatts_char_md_t char_md;
@@ -263,288 +309,203 @@ void add_characteristic(ble_os_t* p_our_service, uint16_t  characteristic, uint8
             &char_md,
             &attr_char_value,
             &p_our_service->char_handles[char_index]);
-    APP_ERROR_CHECK(err_code);
+    NRF_APP_ERROR_CHECK(err_code);
 }
 
-
-static void
-on_ble_evt(ble_evt_t *p_ble_evt)
+static void on_ble_evt(ble_os_t * p_our_service, ble_evt_t const * p_ble_evt)
 {
-	switch (p_ble_evt->header.evt_id) {
-	case BLE_GAP_EVT_CONNECTED:
-		//ble_gap_addr_print(&(p_ble_evt->evt.gap_evt.params.connected.peer_addr));
-		/*
-		sd_ble_gap_rssi_start(p_ble_evt->evt.gap_evt.conn_handle,
-			BLE_GAP_RSSI_THRESHOLD_INVALID,
-			0);
-		*/
-		// m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;'
+    ret_code_t err_code;
 
+    switch (p_ble_evt->header.evt_id) {
 
+    case BLE_GATTS_EVT_SYS_ATTR_MISSING:
+	// No system attributes have been stored.
+	err_code = sd_ble_gatts_sys_attr_set(our_service.conn_handle, NULL, 0, 0);
+	NRF_APP_ERROR_CHECK(err_code);
+	break;
 
-		break;
+    case BLE_GATTC_EVT_TIMEOUT:
+	// Disconnect on GATT Client timeout event.
+	DEBUG("GATT Client Timeout.\n");
+	err_code = sd_ble_gap_disconnect(p_ble_evt->evt.gattc_evt.conn_handle,
+					 BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+	NRF_APP_ERROR_CHECK(err_code);
+	break;
 
-	case BLE_GAP_EVT_DISCONNECTED:
-		// m_conn_handle = BLE_CONN_HANDLE_INVALID;
-		ble_advertising_start();
-		break;
-	default:
-		break;
-	}
+    case BLE_GATTS_EVT_TIMEOUT:
+	// Disconnect on GATT Server timeout event.
+	DEBUG("GATT Server Timeout.\n");
+	err_code = sd_ble_gap_disconnect(p_ble_evt->evt.gatts_evt.conn_handle,
+					 BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+	NRF_APP_ERROR_CHECK(err_code);
+	break;
+
+    default:
+	break;
+    }
 }
 
-static void on_ble_write(ble_os_t * p_our_service, ble_evt_t * p_ble_evt)
+static void on_ble_write(ble_os_t * p_our_service, ble_evt_t const * p_ble_evt)
 {
-	// Declare buffer variable to hold received data. The data can only be 32 bit long.
-	uint8_t data_buffer;
-	// Populate ble_gatts_value_t structure to hold received data and metadata.
-	ble_gatts_value_t rx_data;
-	rx_data.len = sizeof(uint8_t);
-	rx_data.offset = 0;
-	rx_data.p_value = &data_buffer;
+    // Declare buffer variable to hold received data. The data can only be 32 bit long.
+    uint8_t data_buffer;
+    // Populate ble_gatts_value_t structure to hold received data and metadata.
+    ble_gatts_value_t rx_data;
+    rx_data.len = sizeof(uint8_t);
+    rx_data.offset = 0;
+    rx_data.p_value = &data_buffer;
 
-	// Check if write event is performed on our characteristic or the CCCD
-	for (uint8_t i = 0; i < 2; i++)
-	{
-		if (p_ble_evt->evt.gatts_evt.params.write.handle ==
-		p_our_service->char_handles[i].value_handle)
-		{
-			// Get data
-			sd_ble_gatts_value_get(p_our_service->conn_handle,
-		    p_our_service->char_handles[i].value_handle, &rx_data);
-			// Print handle and value
-			// printf("Value received on handle %#06x: %#010x\r\n",
-		    // p_ble_evt->evt.gatts_evt.params.write.handle,
-		    // (unsigned int)data_buffer);
+    // Check if write event is performed on our characteristic or the CCCD
+    for (uint8_t i = 0; i < 2; i++) {
+	if (p_ble_evt->evt.gatts_evt.params.write.handle
+	    == p_our_service->char_handles[i].value_handle) {
+	    // Get data
+	    sd_ble_gatts_value_get(p_our_service->conn_handle,
+				   p_our_service->char_handles[i].value_handle, &rx_data);
+	    DEBUG("Value CCCD recv\n");
 
-			//Pyry was here
-			if(((unsigned int)data_buffer) == 0x00000000){LED1_OFF;LED2_OFF;LED3_OFF;}
-			else if(((unsigned int)data_buffer) == 0x00000002){LED1_ON;LED2_OFF;LED3_OFF;}
-			else if(((unsigned int)data_buffer) == 0x00000003){LED1_OFF;LED2_ON;LED3_OFF;}
-			else if(((unsigned int)data_buffer) == 0x00000004){LED1_OFF;LED2_OFF;LED3_ON;}
-			puts("Value CCCD recv");
-		}
-		else if (p_ble_evt->evt.gatts_evt.params.write.handle ==
-		p_our_service->char_handles[i].cccd_handle)
-		{
-			// Get data
-			sd_ble_gatts_value_get(p_our_service->conn_handle,
-		    p_our_service->char_handles[i].cccd_handle, &rx_data);
-			// Print handle and value
-			// printf("Value received on handle %#06x: %#06x\r\n",
-		//     p_ble_evt->evt.gatts_evt.params.write.handle,
-		//     (unsigned int)data_buffer);
-			puts("Value recv");
+	    //Pyry was here
+	    if(((unsigned int)data_buffer) == 0x00000000){LED1_OFF;LED2_OFF;LED3_OFF;}
+	    else if(((unsigned int)data_buffer) == 0x00000002){LED1_ON;LED2_OFF;LED3_OFF;}
+	    else if(((unsigned int)data_buffer) == 0x00000003){LED1_OFF;LED2_ON;LED3_OFF;}
+	    else if(((unsigned int)data_buffer) == 0x00000004){LED1_OFF;LED2_OFF;LED3_ON;}
+
+	} else if (p_ble_evt->evt.gatts_evt.params.write.handle
+		   == p_our_service->char_handles[i].cccd_handle) {
+	    DEBUG("Value recv\n");
+	    // Get data
+	    sd_ble_gatts_value_get(p_our_service->conn_handle,
+				   p_our_service->char_handles[i].cccd_handle, &rx_data);
 	}
-/*
-        printf("data_buffer: %lx", data_buffer);
-		if (data_buffer == 0x0001)
-		{
-			printf("Notification enabled\r\n");
-		}
-		else if (data_buffer == 0x0000)
-		{
-			printf("Notification disabled\r\n");
-		}
-*/
-	}
+    }
 }
 
-void ble_our_service_on_ble_evt(ble_os_t * p_our_service, ble_evt_t * p_ble_evt)
+void ble_our_service_on_ble_evt(ble_os_t * p_our_service, ble_evt_t const * p_ble_evt)
 {
-
-	//Implement switch case handling BLE events related to our service.
-	switch (p_ble_evt->header.evt_id)
-	{
-	case BLE_GATTS_EVT_WRITE:
-		on_ble_write(p_our_service, p_ble_evt);
-		break;
-	case BLE_GAP_EVT_CONNECTED:
-		p_our_service->conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
-		puts("connected");
-		break;
-	case BLE_GAP_EVT_DISCONNECTED:
-		p_our_service->conn_handle = BLE_CONN_HANDLE_INVALID;
-		puts("disconnected");
-		break;
-	default:
-		// No implementation needed.
-		break;
-	}
+    // Implement switch case handling BLE events related to our service.
+    switch (p_ble_evt->header.evt_id) {
+    case BLE_GAP_EVT_CONNECTED:
+	LED_CONNECTED_ON;
+	p_our_service->conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
+	break;
+    case BLE_GAP_EVT_DISCONNECTED:
+	LED_CONNECTED_OFF;
+	p_our_service->conn_handle = BLE_CONN_HANDLE_INVALID;
+	break;
+    case BLE_GATTS_EVT_WRITE:
+	on_ble_write(p_our_service, p_ble_evt);
+	break;
+    default:
+	// No implementation needed.
+	break;
+    }
 }
 
 void acc_characteristic_update(ble_os_t *p_our_service, uint32_t *acc_value, uint8_t char_index)
 {
-	if (p_our_service->conn_handle != BLE_CONN_HANDLE_INVALID)
-	{
-		uint16_t               len = 1;
-		ble_gatts_hvx_params_t hvx_params;
-		memset(&hvx_params, 0, sizeof(hvx_params));
+    if (p_our_service->conn_handle != BLE_CONN_HANDLE_INVALID) {
+	uint16_t               len = 1;
+	ble_gatts_hvx_params_t hvx_params;
+	memset(&hvx_params, 0, sizeof(hvx_params));
 
-		hvx_params.handle = p_our_service->char_handles[char_index].value_handle;
-		hvx_params.type   = BLE_GATT_HVX_NOTIFICATION;
-		hvx_params.offset = 0;
-		hvx_params.p_len  = &len;
-		hvx_params.p_data = (uint8_t*)acc_value;
+	hvx_params.handle = p_our_service->char_handles[char_index].value_handle;
+	hvx_params.type   = BLE_GATT_HVX_NOTIFICATION;
+	hvx_params.offset = 0;
+	hvx_params.p_len  = &len;
+	hvx_params.p_data = (uint8_t*)acc_value;
 
-		sd_ble_gatts_hvx(p_our_service->conn_handle, &hvx_params);
-	}
-	else
-	{
-		uint16_t          len = 1;
-		ble_gatts_value_t tx_data;
-		tx_data.len     = len;
-		tx_data.offset  = 0;
-		tx_data.p_value = (uint8_t*)acc_value;
-		sd_ble_gatts_value_set(p_our_service->conn_handle, p_our_service->char_handles[char_index].value_handle, &tx_data);
-	}
+	sd_ble_gatts_hvx(p_our_service->conn_handle, &hvx_params);
+    } else {
+	uint16_t          len = 1;
+	ble_gatts_value_t tx_data;
+	tx_data.len     = len;
+	tx_data.offset  = 0;
+	tx_data.p_value = (uint8_t*)acc_value;
+	sd_ble_gatts_value_set(p_our_service->conn_handle,
+			       p_our_service->char_handles[char_index].value_handle,
+			       &tx_data);
+    }
 }
 
 static void
-ble_evt_dispatch(ble_evt_t *p_ble_evt)
+ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
 {
-	//ble_conn_params_on_ble_evt(p_ble_evt);
-	on_ble_evt(p_ble_evt);
-	ble_our_service_on_ble_evt(&our_service, p_ble_evt);
+    //ble_conn_params_on_ble_evt(p_ble_evt);
+    on_ble_evt(&our_service, p_ble_evt);
+    ble_our_service_on_ble_evt(&our_service, p_ble_evt);
 }
 
 void *ble_thread(void *arg)
 {
-	(void)arg;
+    (void)arg;
 
-	//printf("2nd thread started, pid: %" PRIkernel_pid "\n", thread_getpid());
-	puts("2nd thread started");
+    DEBUG("2nd thread started, pid: %" PRIkernel_pid "\n", thread_getpid());
+
+    // Start execution.
+    ble_advertising_start(&ble_context);
+
+    for (;;) {
 	msg_t m;
-	msg_init_queue(rcv_queue, RCV_QUEUE_SIZE);
+	msg_receive(&m);
+	// DEBUG("message received: type=%d\n", m.type);
+	switch (m.type) {
+	case UPDATE_ACC:
+	    acc_characteristic_update(&our_service, &m.content.value, 0);
+	    break;
+	case UPDATE_ENERGY:
+	    acc_characteristic_update(&our_service, &m.content.value, 1);
+	    break;
+	default:
+	    break;
 
-	stack_init();
-	// gap_params_init();
-	services_init();
-	ble_advertising_init(DEVICE_NAME);
-
-	// Start execution.
-	ble_advertising_start();
-	while (1) {
-
-		msg_receive(&m);
-		switch (m.type)
-		{
-			case UPDATE_ACC:
-				//puts("acc_message receiving");
-				acc_characteristic_update(&our_service, &m.content.value, 0);
-				puts("acc_message received");
-				//printf("%d\n",(int)m.content.value);
-				break;
-			case UPDATE_ENERGY:
-				//puts("acc_message receiving");
-				acc_characteristic_update(&our_service, &m.content.value, 1);
-				//puts("acc_message received");
-				//printf("%d\n",(int)m.content.value);
-				break;
-			default:
-				break;
-
-		}
-
-		/*
-		printf("2nd: Got msg from %" PRIkernel_pid "\n", m.sender_pid);
-		m.content.value++;
-		msg_reply(&m, &m);
-		*/
 	}
-
-	return NULL;
-}
-
-void mpu_interrupt_cb(void *arg)
-{
-	//msg_t intm;
-	//intm.type = ACC_DATA_READY;
-	//msg_send(&intm, main_pid);
-	//gpio_set(13);
-	//LED0_TOGGLE;
-}
-
-int main(void)
-{
-/*
-I have altered this part, pray I shall not alter it further
--Pyry
-*/
-	main_pid = thread_getpid();
-	msg_t main_message;
-	uint8_t state0 = 1;
-	uint8_t state1 = 1;
-	uint8_t state2 = 1;
-	uint8_t state3 = 1;
-	char ble_thread_stack[(THREAD_STACKSIZE_DEFAULT/2)];
-
-	gpio_init(BTN0_PIN, BTN0_MODE);
-	gpio_init(BTN1_PIN, BTN1_MODE);
-	gpio_init(BTN2_PIN, BTN2_MODE);
-	gpio_init(BTN3_PIN, BTN3_MODE);
-
-	ble_thread_pid = thread_create(ble_thread_stack, sizeof(ble_thread_stack),
-		BLE_PRIO, 0/*THREAD_CREATE_STACKTEST*/, ble_thread, NULL, "BLE");
-	LED0_TOGGLE;
-	
-
-    	puts("Entering main loop");
-	//msg_init_queue(rcv_queue_main, RCV_QUEUE_SIZE);
-
-
-    for (;; )
-    {
-		state0 = gpio_read(BTN0_PIN);
-		state1 = gpio_read(BTN1_PIN);
-		state2 = gpio_read(BTN2_PIN);
-		state3 = gpio_read(BTN3_PIN);
-		if(!state0 | !state1 | !state2 | !state3)
-		{
-
-			uint8_t dummyC = 0;
-			uint8_t dummyE = 0;
-
-
-			if(!state0){
-			dummyC = 0;			
-			dummyE = 0;
-			
-			}
-			else if(!state1){
-
-			dummyC = 0x01;			
-			dummyE = 0x88;	
-			
-			}else if(!state2){
-
-			dummyC = 0x02;			
-			dummyE = 0xaa;	
-			
-			}else if(!state3){
-
-			dummyC = 0x03;			
-			dummyE = 0xff;	
-			
-			}
-			char *ptr = 0xBBCF;//BLE_UUID_ENERGY_CHARACTERISTIC;
-
-			puts(ptr);
-			
-			main_message.type = UPDATE_ACC;
-			main_message.content.value = dummyC;
-			msg_send(&main_message, ble_thread_pid);
-			//main_message.type = UPDATE_ENERGY;
-			//main_message.content.value = dummyE;
-			//msg_send(&main_message, ble_thread_pid);
-
-			//Left here for historical purposes. Rip in pieces.
-			//xtimer_usleep(SLEEP);
-		}
     }
 }
 
+static char ble_thread_stack[(THREAD_STACKSIZE_DEFAULT*2)];
 
-/**
- * @}
- */
+int main(void)
+{
+    DEBUG("Entering main function.\n");
+
+    ble_init(&ble_context);
+    gap_params_init(&ble_context);
+    gatt_init();
+    services_init(&ble_context);
+    ble_advertising_init(&ble_context);
+
+    main_pid = thread_getpid();
+    msg_t main_message;
+
+    gpio_init(BTN0_PIN, BTN0_MODE);
+    gpio_init(BTN1_PIN, BTN1_MODE);
+    gpio_init(BTN2_PIN, BTN2_MODE);
+    gpio_init(BTN3_PIN, BTN3_MODE);
+
+    ble_thread_pid = thread_create(ble_thread_stack, sizeof(ble_thread_stack),
+				   BLE_THREAD_PRIO, 0/*THREAD_CREATE_STACKTEST*/,
+				   ble_thread, NULL, "BLE");
+    LED0_TOGGLE;
+	
+    DEBUG("Entering main loop.\n");
+
+    uint8_t state = 0;
+
+    for (;;) {
+	uint8_t new_state = 0;
+
+	new_state |= (!gpio_read(BTN0_PIN)) << 0;
+	new_state |= (!gpio_read(BTN1_PIN)) << 1;
+	new_state |= (!gpio_read(BTN2_PIN)) << 2;
+	new_state |= (!gpio_read(BTN3_PIN)) << 3;
+
+	if (new_state != state) {
+	    state = new_state;
+	    main_message.type = UPDATE_ACC;
+	    main_message.content.value = state;
+	    msg_send(&main_message, ble_thread_pid);
+	    DEBUG("New button state: %d\n", state);
+	}
+	xtimer_usleep(100000);
+    }
+}
