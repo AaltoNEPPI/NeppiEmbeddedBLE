@@ -41,7 +41,7 @@
  * Advertised device name
  */
 #ifndef DEVICE_NAME
-#define DEVICE_NAME "NeppiT"
+#define DEVICE_NAME "NepEmBLE"
 #endif // DEVICE_NAME
 
 /**
@@ -340,35 +340,32 @@ static void on_ble_evt(ble_os_t * p_our_service, ble_evt_t const * p_ble_evt)
 
 static void on_ble_write(ble_os_t * p_our_service, ble_evt_t const * p_ble_evt)
 {
-    // Declare buffer variable to hold received data. The data can only be 32 bit long.
-    uint8_t data_buffer;
-    // Populate ble_gatts_value_t structure to hold received data and metadata.
-    ble_gatts_value_t rx_data;
-    rx_data.len = sizeof(uint8_t);
-    rx_data.offset = 0;
-    rx_data.p_value = &data_buffer;
+    // Buffer to hold received data. The data can only be at most 32 bit long.
+    uint8_t data;
 
-    // Check if write event is performed on our characteristic or the CCCD
+    // Populate ble_gatts_value_t structure for received data and metadata.
+    ble_gatts_value_t rx_data = {
+	.len = sizeof(uint8_t),
+	.offset = 0,
+	.p_value = &data,
+    };
+
+    const uint16_t handle = p_ble_evt->evt.gatts_evt.params.write.handle;
+
+    // Check if write event is performed on our characteristic or CCCD
     for (uint8_t i = 0; i < 2; i++) {
-	if (p_ble_evt->evt.gatts_evt.params.write.handle
-	    == p_our_service->char_handles[i].value_handle) {
+	if (handle == p_our_service->char_handles[i].value_handle) {
 	    // Get data
-	    sd_ble_gatts_value_get(p_our_service->conn_handle,
-				   p_our_service->char_handles[i].value_handle, &rx_data);
-	    DEBUG("Value CCCD recv\n");
+	    sd_ble_gatts_value_get(p_our_service->conn_handle, handle, &rx_data);
+	    DEBUG("Value changed h=%d: %d\n", handle, data);
 
-	    //Pyry was here
-	    if(((unsigned int)data_buffer) == 0x00000000){LED1_OFF;LED2_OFF;LED3_OFF;}
-	    else if(((unsigned int)data_buffer) == 0x00000002){LED1_ON;LED2_OFF;LED3_OFF;}
-	    else if(((unsigned int)data_buffer) == 0x00000003){LED1_OFF;LED2_ON;LED3_OFF;}
-	    else if(((unsigned int)data_buffer) == 0x00000004){LED1_OFF;LED2_OFF;LED3_ON;}
+	    if (data & 0x01) { LED3_ON; } else { LED3_OFF; }
+	    if (data & 0x02) { LED4_ON; } else { LED4_OFF; }
 
-	} else if (p_ble_evt->evt.gatts_evt.params.write.handle
-		   == p_our_service->char_handles[i].cccd_handle) {
-	    DEBUG("Value recv\n");
+	} else if (write_handle == p_our_service->char_handles[i].cccd_handle) {
+	    DEBUG("CCCD for h=%d\n", handle);
 	    // Get data
-	    sd_ble_gatts_value_get(p_our_service->conn_handle,
-				   p_our_service->char_handles[i].cccd_handle, &rx_data);
+	    sd_ble_gatts_value_get(p_our_service->conn_handle, handle, &rx_data);
 	}
     }
 }

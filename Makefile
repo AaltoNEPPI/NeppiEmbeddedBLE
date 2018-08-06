@@ -20,7 +20,7 @@ PORT  ?= /dev/ttyACM0
 CFLAGS_OPT ?= -O0
 
 # This has to be the absolute path to the RIOT base directory:
-RIOTBASE ?= $(CURDIR)/../../../RIOT
+RIOTBASE ?= $(CURDIR)/../RIOT
 
 # Uncomment this to enable scheduler statistics for ps:
 #CFLAGS += -DSCHEDSTATISTICS
@@ -41,7 +41,7 @@ DEVELHELP = 1
 
 # Modules to include
 
-#USEMODULE += shell
+USEMODULE += shell
 #USEMODULE += posix
 USEMODULE += xtimer
 USEMODULE += periph_uart
