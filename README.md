@@ -41,7 +41,7 @@ can be used to override this.
 
 Let nRF connect to scan for the nearby Bluetooth devices.  Select one
 named according to your compiled example; search for `DEVICE_NAME` in
-`main.c`.  The default name is `nRFSDex`.
+`main.c`.  The default name is `NepEmBLE`.
 
 When connected to the device, you should see a custom service identifier
 `B131ABCD-7195-142B-E012-0808817F198D`.  This is basically a random
